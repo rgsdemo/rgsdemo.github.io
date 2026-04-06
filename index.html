@@ -1,0 +1,502 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Juice Prototype - Fluid Sorting v9</title>
+    <style>
+        /* Base Reset */
+        * { box-sizing: border-box; user-select: none; touch-action: none; }
+        body { 
+            margin: 0; padding: 0; 
+            height: 100dvh; width: 100vw; 
+            background-color: #0a0a0f; color: white; 
+            font-family: sans-serif; overflow: hidden; 
+        }
+
+        /* Variables */
+        :root {
+            --wagon-size: 40px;
+            --gap: 6px;
+        }
+        
+        #game-container {
+            display: flex; flex-direction: column;
+            width: 100%; height: 100%; max-width: 600px;
+            margin: 0 auto; position: relative;
+            /* Indique que toute la zone est cliquable */
+            cursor: crosshair; 
+        }
+
+        /* UI Hint */
+        #hint {
+            position: absolute; top: 50%; width: 100%; text-align: center;
+            color: #555; font-weight: bold; letter-spacing: 2px;
+            pointer-events: none; transition: opacity 0.5s; z-index: 0;
+            transform: translateY(-50%);
+        }
+
+        /* Stations Container */
+        #stations {
+            position: absolute; top: 10%; left: 0; width: 100%;
+            display: grid; grid-template-columns: repeat(4, 1fr);
+            justify-items: center; z-index: 10;
+        }
+
+        /* Train Assembly */
+        .train-assembly {
+            display: flex; flex-direction: column; align-items: center;
+            gap: var(--gap);
+            width: 60px;
+            transform: translateY(0);
+        }
+
+        /* Locomotive */
+        .locomotive {
+            width: 0; height: 0;
+            border-left: 25px solid transparent;
+            border-right: 25px solid transparent;
+            border-bottom: 45px solid var(--color);
+            filter: drop-shadow(0 0 10px var(--glow));
+            transform-origin: bottom center;
+        }
+
+        /* Docked Wagons */
+        .docked-wagon {
+            width: var(--wagon-size); height: var(--wagon-size);
+            background: var(--color); border-radius: 10px;
+            box-shadow: inset 0 -4px 0 rgba(0,0,0,0.2), 0 0 10px var(--glow);
+            transform-origin: bottom center;
+        }
+
+        /* Moving Wagon (Interactive) */
+        .moving-wagon {
+            position: absolute; left: 0; top: 0;
+            width: var(--wagon-size); height: var(--wagon-size);
+            background: var(--color); border-radius: 10px;
+            z-index: 20;
+            box-shadow: 0 10px 20px rgba(0,0,0,0.3), 0 0 15px var(--glow);
+            opacity: 0; 
+            pointer-events: none; /* Le clic est géré par le conteneur global maintenant */
+            transition: opacity 0.2s ease-in;
+        }
+
+        /* === JUICE ANIMATIONS === */
+        @keyframes arrive {
+            0% { transform: translateY(-150px); opacity: 0; }
+            100% { transform: translateY(0); opacity: 1; }
+        }
+        .anim-arrive { animation: arrive 1.5s cubic-bezier(0.2, 0.8, 0.2, 1) forwards; }
+
+        @keyframes squash {
+            0% { transform: scale(1, 1); }
+            40% { transform: scale(1.3, 0.7) translateY(4px); }
+            70% { transform: scale(0.9, 1.1) translateY(-2px); }
+            100% { transform: scale(1, 1) translateY(0); }
+        }
+        .anim-squash { animation: squash 0.3s ease-out forwards; }
+
+        @keyframes bump {
+            0% { transform: translateY(0); }
+            20% { transform: translateY(-8px); }
+            50% { transform: translateY(2px); }
+            100% { transform: translateY(0); }
+        }
+        .anim-bump { animation: bump 0.4s ease-out; }
+
+        @keyframes depart {
+            0% { transform: translateY(0) scale(1, 1); }
+            20% { transform: translateY(10px) scale(1.05, 0.95); }
+            100% { transform: translateY(-100vh) scale(0.95, 1.1); }
+        }
+        .anim-depart { animation: depart 1s cubic-bezier(0.5, -0.2, 0.1, 1) forwards; }
+
+        @keyframes flash {
+            0% { filter: brightness(1) drop-shadow(0 0 10px var(--glow)); }
+            50% { filter: brightness(2) drop-shadow(0 0 30px var(--color)); }
+            100% { filter: brightness(1) drop-shadow(0 0 10px var(--glow)); }
+        }
+        .anim-flash { animation: flash 0.5s ease-out; }
+
+        /* REJECTION ANIMATIONS */
+        @keyframes shake {
+            0%, 100% { transform: translateX(0); }
+            25% { transform: translateX(-4px) rotate(-2deg); }
+            50% { transform: translateX(4px) rotate(2deg); }
+            75% { transform: translateX(-2px) rotate(-1deg); }
+        }
+        .anim-shake { animation: shake 0.3s ease-in-out; }
+
+        @keyframes eject {
+            0% { transform: translateY(0) scale(1) rotate(0deg); opacity: 1; }
+            20% { transform: translateY(-10px) scale(1.1) rotate(-5deg); }
+            100% { transform: translateY(250px) scale(0) rotate(180deg); opacity: 0; }
+        }
+        .anim-eject { animation: eject 0.6s cubic-bezier(0.5, -0.5, 0.5, 1.5) forwards; }
+
+        .particle {
+            position: absolute; border-radius: 50%;
+            pointer-events: none; z-index: 30;
+        }
+    </style>
+</head>
+<body>
+
+<div id="game-container">
+    <div id="hint">TAP TO SHOOT</div>
+    <div id="stations"></div>
+</div>
+
+<script>
+    /**
+     * CONFIGURATION
+     */
+    const CONFIG = {
+        MAX_WAGONS: 4,
+        COLORS: [
+            { id: 'red', hex: '#ff3366', glow: 'rgba(255, 51, 102, 0.6)' },
+            { id: 'green', hex: '#33cc66', glow: 'rgba(51, 204, 102, 0.6)' },
+            { id: 'blue', hex: '#3366ff', glow: 'rgba(51, 102, 255, 0.6)' },
+            { id: 'yellow', hex: '#ffcc00', glow: 'rgba(255, 204, 0, 0.6)' }
+        ],
+        SHOOT_SPEED: -25 // Vitesse du wagon propulsé vers le haut
+    };
+
+    /**
+     * FX Engine for Juice
+     */
+    class FX {
+        static createImpact(x, y, colorHex) {
+            const container = document.getElementById('game-container');
+            for (let i = 0; i < 8; i++) {
+                const p = document.createElement('div');
+                p.className = 'particle';
+                const size = Math.random() * 6 + 2;
+                p.style.width = `${size}px`; p.style.height = `${size}px`;
+                p.style.left = `${x}px`; p.style.top = `${y}px`;
+                p.style.backgroundColor = colorHex;
+                container.appendChild(p);
+
+                const angle = (Math.random() * Math.PI) - (Math.PI / 2);
+                const velocity = Math.random() * 50 + 20;
+                const tx = x + Math.cos(angle) * velocity;
+                const ty = y - Math.sin(angle) * velocity;
+
+                p.style.transition = 'all 0.4s cubic-bezier(0.1, 0.8, 0.3, 1)';
+                requestAnimationFrame(() => {
+                    p.style.left = `${tx}px`; p.style.top = `${ty}px`;
+                    p.style.opacity = '0';
+                    p.style.transform = 'translate(-50%, -50%) scale(0)';
+                });
+                setTimeout(() => p.remove(), 400);
+            }
+        }
+
+        static createSmoke(x, y, isError = false) {
+            const container = document.getElementById('game-container');
+            const p = document.createElement('div');
+            p.className = 'particle';
+            const size = Math.random() * 15 + 10;
+            p.style.width = `${size}px`; p.style.height = `${size}px`;
+            p.style.left = `${x}px`; p.style.top = `${y}px`;
+            p.style.backgroundColor = isError ? 'rgba(100, 100, 100, 0.8)' : 'rgba(255, 255, 255, 0.8)';
+            p.style.filter = 'blur(2px)';
+            container.appendChild(p);
+
+            const tx = x + (Math.random() * 40 - 20);
+            const ty = y + (Math.random() * 100 + 50);
+
+            p.style.transition = 'all 0.6s linear';
+            requestAnimationFrame(() => {
+                p.style.left = `${tx}px`; p.style.top = `${ty}px`;
+                p.style.opacity = '0';
+                p.style.transform = 'translate(-50%, -50%) scale(2)';
+            });
+            setTimeout(() => p.remove(), 600);
+        }
+    }
+
+    /**
+     * LOCOMOTIVE
+     */
+    class Locomotive {
+        constructor(colorData, gameManager) {
+            this.colorData = colorData;
+            this.manager = gameManager;
+            this.wagonsAttached = 0;
+            this.state = 'idle'; 
+            this.buildDOM();
+        }
+
+        buildDOM() {
+            const stationsContainer = document.getElementById('stations');
+            
+            this.assembly = document.createElement('div');
+            this.assembly.className = 'train-assembly anim-arrive';
+            this.assembly.style.setProperty('--color', this.colorData.hex);
+            this.assembly.style.setProperty('--glow', this.colorData.glow);
+            
+            this.locoEl = document.createElement('div');
+            this.locoEl.className = 'locomotive';
+            this.assembly.appendChild(this.locoEl);
+            
+            stationsContainer.appendChild(this.assembly);
+            setTimeout(() => this.assembly.classList.remove('anim-arrive'), 1500);
+        }
+
+        receiveWagon(wagonObj) {
+            const isMatch = (wagonObj.colorData.id === this.colorData.id) && (this.state === 'idle');
+
+            const docked = document.createElement('div');
+            docked.className = 'docked-wagon anim-squash';
+            docked.style.setProperty('--color', wagonObj.colorData.hex);
+            docked.style.setProperty('--glow', wagonObj.colorData.glow);
+            this.assembly.appendChild(docked);
+
+            const coords = this.getTargetCoordinates();
+            FX.createImpact(coords.x, coords.y, wagonObj.colorData.hex);
+            
+            this.assembly.classList.remove('anim-bump');
+            void this.assembly.offsetWidth; 
+            this.assembly.classList.add('anim-bump');
+
+            if (isMatch) {
+                this.acceptWagon(docked);
+            } else {
+                this.rejectWagon(docked);
+            }
+        }
+
+        acceptWagon(dockedEl) {
+            this.wagonsAttached++;
+            
+            if (this.wagonsAttached >= CONFIG.MAX_WAGONS) {
+                this.depart();
+                setTimeout(() => this.manager.spawnInteractiveWagon(), 300);
+            } else {
+                this.manager.spawnInteractiveWagon(); 
+            }
+        }
+
+        rejectWagon(dockedEl) {
+            setTimeout(() => {
+                this.locoEl.classList.add('anim-shake');
+                
+                dockedEl.classList.remove('anim-squash');
+                dockedEl.classList.add('anim-eject');
+                
+                const rect = dockedEl.getBoundingClientRect();
+                const parentRect = document.getElementById('game-container').getBoundingClientRect();
+                const smokeX = (rect.left - parentRect.left) + rect.width / 2;
+                const smokeY = (rect.top - parentRect.top);
+                
+                FX.createSmoke(smokeX, smokeY, true);
+
+                this.manager.spawnInteractiveWagon();
+
+                setTimeout(() => {
+                    dockedEl.remove();
+                    this.locoEl.classList.remove('anim-shake');
+                }, 600);
+
+            }, 400);
+        }
+
+        depart() {
+            this.state = 'departing';
+            
+            setTimeout(() => {
+                this.locoEl.classList.add('anim-flash');
+                this.assembly.classList.add('anim-depart');
+                
+                const smokeInterval = setInterval(() => {
+                    const coords = this.getTargetCoordinates();
+                    FX.createSmoke(coords.x, coords.y);
+                }, 50);
+
+                setTimeout(() => {
+                    clearInterval(smokeInterval);
+                    this.scheduleReturn();
+                }, 1000);
+            }, 300); 
+        }
+
+        scheduleReturn() {
+            this.assembly.style.opacity = '0';
+            
+            const wagons = this.assembly.querySelectorAll('.docked-wagon');
+            wagons.forEach(w => w.remove());
+            
+            this.assembly.classList.remove('anim-depart', 'anim-bump');
+            this.locoEl.classList.remove('anim-flash');
+            
+            setTimeout(() => {
+                this.wagonsAttached = 0;
+                this.state = 'idle';
+                this.assembly.style.opacity = '1';
+                this.assembly.classList.add('anim-arrive');
+                
+                setTimeout(() => {
+                    this.assembly.classList.remove('anim-arrive');
+                }, 1500);
+
+            }, 2000);
+        }
+
+        getTargetCoordinates() {
+            const rect = this.assembly.getBoundingClientRect();
+            const parentRect = document.getElementById('game-container').getBoundingClientRect();
+            return {
+                x: (rect.left - parentRect.left) + rect.width / 2,
+                y: (rect.bottom - parentRect.top) + 10 
+            };
+        }
+    }
+
+    /**
+     * WAGON (Tap to Shoot)
+     */
+    class InteractiveWagon {
+        constructor(colorData, gameManager) {
+            this.colorData = colorData;
+            this.manager = gameManager;
+            this.el = document.createElement('div');
+            
+            this.state = 'idle';
+            
+            // Base floating position (en bas sur le côté)
+            this.baseX = 60;
+            this.baseY = window.innerHeight - 80;
+            this.currentX = this.baseX;
+            this.currentY = this.baseY;
+            
+            this.floatTimer = 0; // Pour animer la lévitation
+            this.vy = 0;
+
+            this.buildDOM();
+            this.bindEvents();
+
+            this.renderLoop = this.update.bind(this);
+            requestAnimationFrame(this.renderLoop);
+        }
+
+        buildDOM() {
+            this.el.className = 'moving-wagon';
+            this.el.style.setProperty('--color', this.colorData.hex);
+            this.el.style.setProperty('--glow', this.colorData.glow);
+            this.el.style.transform = `translate(${this.currentX - 20}px, ${this.currentY - 20}px)`;
+            
+            document.getElementById('game-container').appendChild(this.el);
+            requestAnimationFrame(() => this.el.style.opacity = '1');
+        }
+
+        update() {
+            if (this.state === 'docked') return;
+
+            if (this.state === 'idle') {
+                // Flottaison gérée mathématiquement pour une fluidité parfaite
+                this.floatTimer += 0.05;
+                this.currentY = this.baseY + Math.sin(this.floatTimer) * 12;
+            
+            } else if (this.state === 'thrown') {
+                // Le wagon file tout droit vers le haut
+                this.currentY += this.vy;
+
+                const bounds = document.getElementById('game-container').getBoundingClientRect();
+                const stationThresholdY = bounds.height * 0.15 + 40; 
+                
+                if (this.currentY < stationThresholdY) {
+                    this.state = 'docked';
+                    this.triggerDocking();
+                    return;
+                }
+            }
+
+            this.el.style.transform = `translate(${this.currentX - 20}px, ${this.currentY - 20}px)`;
+            requestAnimationFrame(this.renderLoop);
+        }
+
+        getPointerCoords(e) {
+            const bounds = document.getElementById('game-container').getBoundingClientRect();
+            return {
+                x: e.clientX - bounds.left,
+                y: e.clientY - bounds.top
+            };
+        }
+
+        bindEvents() {
+            this.onTap = this.handleTap.bind(this);
+            // On écoute le tap sur tout le conteneur du jeu
+            document.getElementById('game-container').addEventListener('pointerdown', this.onTap);
+        }
+
+        handleTap(e) {
+            if (this.state !== 'idle') return;
+            
+            document.getElementById('hint').style.opacity = '0';
+            document.getElementById('game-container').removeEventListener('pointerdown', this.onTap);
+            
+            const pointer = this.getPointerCoords(e);
+            
+            // 1. Téléportation immédiate
+            this.currentX = pointer.x;
+            this.currentY = pointer.y;
+            
+            // 2. Feedback visuel (Juice de la téléportation)
+            FX.createImpact(this.currentX, this.currentY, this.colorData.hex);
+            
+            // 3. Changement d'état et propulsion rectiligne
+            this.state = 'thrown';
+            this.vy = CONFIG.SHOOT_SPEED;
+        }
+
+        triggerDocking() {
+            let closestLoco = null;
+            let minDistance = Infinity;
+
+            this.manager.locomotives.forEach(loco => {
+                const locoPos = loco.getTargetCoordinates();
+                const distanceX = Math.abs(this.currentX - locoPos.x);
+                
+                if (distanceX < minDistance) {
+                    minDistance = distanceX;
+                    closestLoco = loco;
+                }
+            });
+
+            closestLoco.receiveWagon(this);
+            this.el.remove();
+        }
+    }
+
+    /**
+     * GAME MANAGER
+     */
+    class GameManager {
+        constructor() {
+            this.locomotives = [];
+            this.init();
+        }
+
+        init() {
+            CONFIG.COLORS.forEach(color => {
+                this.locomotives.push(new Locomotive(color, this));
+            });
+
+            setTimeout(() => this.spawnInteractiveWagon(), 1000);
+        }
+
+        spawnInteractiveWagon() {
+            const randomColor = CONFIG.COLORS[Math.floor(Math.random() * CONFIG.COLORS.length)];
+            new InteractiveWagon(randomColor, this);
+        }
+    }
+
+    // Boot
+    window.addEventListener('DOMContentLoaded', () => {
+        new GameManager();
+    });
+
+</script>
+</body>
+</html>
